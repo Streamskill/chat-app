@@ -237,11 +237,10 @@ class ChatApp(ctk.CTk):
             shared_secret = self.private_key.exchange(their_public_key)
             self.session_key = derive_key(shared_secret, self.extra_key)
 
-            self.after(0, self.msg_entry.configure, {"state": "normal"})
-            self.after(0, self.msg_entry.focus)
-            self.after(0, self.status_label.configure, {
-                "text": f"chat  •  🔒 encrypted with {msg['username']}"
-            })
+            self.after(0, lambda: self.msg_entry.configure(state="normal"))
+            self.after(0, lambda: self.msg_entry.focus())
+            name = msg['username']
+            self.after(0, lambda: self.status_label.configure(text=f"chat  •  🔒 encrypted with {name}"))
             self.after(0, self._add_message, "", "🔒 end-to-end encrypted — server sees nothing", True, False)
         except Exception as e:
             self.after(0, self._add_message, "", f"⚠ key exchange failed: {e}", True, False)
