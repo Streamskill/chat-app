@@ -1,0 +1,52 @@
+name: build
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:  # manually trigger from GitHub website too
+
+jobs:
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: setup python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: install dependencies
+        run: pip install customtkinter websockets cryptography pyinstaller
+
+      - name: build exe
+        run: pyinstaller --onefile --windowed --name chat client.py
+
+      - name: upload exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: chat-windows
+          path: dist/chat.exe
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: setup python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: install dependencies
+        run: pip install customtkinter websockets cryptography pyinstaller
+
+      - name: build binary
+        run: pyinstaller --onefile --name chat client.py
+
+      - name: upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: chat-linux
+          path: dist/chat
