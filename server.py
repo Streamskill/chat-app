@@ -90,7 +90,7 @@ async def handler(websocket):
 async def main():
     print("chat server starting on ws://localhost:8765")
     print("max 2 users — server never reads message content\n")
-    async with websockets.serve(handler, "localhost", 8765, ping_interval=20, ping_timeout=10):
+    async with websockets.serve(handler, "0.0.0.0", 8765, ping_interval=20, ping_timeout=10):
         await asyncio.Future()
 
 
