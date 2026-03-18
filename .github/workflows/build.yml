@@ -26,19 +26,22 @@ jobs:
         run: pip install customtkinter websockets cryptography requests aiortc pyinstaller
 
       - name: build exe
-        run: pyinstaller --onefile --windowed --name chat --hidden-import=requests --hidden-import=charset_normalizer --hidden-import=aiortc --collect-all=customtkinter --collect-all=aiortc --python-option u client.py
+        run: pyinstaller --onedir --windowed --name chat --hidden-import=requests --hidden-import=charset_normalizer --hidden-import=aiortc --collect-all=customtkinter --collect-all=aiortc client.py
 
-      - name: upload exe to release
+      - name: zip output
+        run: Compress-Archive -Path dist/chat -DestinationPath dist/chat-windows.zip
+
+      - name: upload to release
         uses: softprops/action-gh-release@v2
         if: github.event_name == 'release'
         with:
-          files: dist/chat.exe
+          files: dist/chat-windows.zip
 
-      - name: upload exe as artifact
+      - name: upload as artifact
         uses: actions/upload-artifact@v4
         with:
           name: chat-windows
-          path: dist/chat.exe
+          path: dist/chat-windows.zip
 
   build-linux:
     runs-on: ubuntu-latest
