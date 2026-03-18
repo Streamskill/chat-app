@@ -20,13 +20,13 @@ jobs:
       - name: setup python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.11"
 
       - name: install dependencies
         run: pip install customtkinter websockets cryptography requests aiortc pyinstaller
 
       - name: build exe
-        run: pyinstaller --onefile --windowed --name chat --hidden-import=requests --hidden-import=charset_normalizer --hidden-import=aiortc --collect-all=customtkinter --collect-all=aiortc client.py
+        run: pyinstaller --onefile --windowed --name chat --hidden-import=requests --hidden-import=charset_normalizer --hidden-import=aiortc --collect-all=customtkinter --collect-all=aiortc --python-option u client.py
 
       - name: upload exe to release
         uses: softprops/action-gh-release@v2
@@ -48,7 +48,7 @@ jobs:
       - name: setup python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.11"
 
       - name: install dependencies
         run: pip install customtkinter websockets cryptography requests aiortc pyinstaller
