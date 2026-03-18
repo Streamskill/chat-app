@@ -112,6 +112,9 @@ class ChatApp(ctk.CTk):
         try:
             r = requests.get(GITHUB_RELEASES, timeout=5)
             data = r.json()
+            print(f"latest tag: {data.get('tag_name')}")
+            print(f"current version: {CURRENT_VERSION}")
+            print(f"assets: {[a['name'] for a in data.get('assets', [])]}")
             latest = data.get("tag_name", "").lstrip("v")
             if not latest or latest == CURRENT_VERSION:
                 return

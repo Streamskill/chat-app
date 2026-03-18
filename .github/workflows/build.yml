@@ -3,6 +3,8 @@ name: build
 on:
   push:
     branches: [ main ]
+  release:
+    types: [created]
   workflow_dispatch:
 
 jobs:
@@ -23,7 +25,13 @@ jobs:
       - name: build exe
         run: pyinstaller --onefile --windowed --name chat --hidden-import=requests --hidden-import=charset_normalizer --hidden-import=aiortc --collect-all=customtkinter --collect-all=aiortc client.py
 
-      - name: upload exe
+      - name: upload exe to release
+        uses: softprops/action-gh-release@v2
+        if: github.event_name == 'release'
+        with:
+          files: dist/chat.exe
+
+      - name: upload exe as artifact
         uses: actions/upload-artifact@v4
         with:
           name: chat-windows
@@ -45,7 +53,13 @@ jobs:
       - name: build binary
         run: pyinstaller --onefile --name chat --hidden-import=requests --hidden-import=charset_normalizer --hidden-import=aiortc --collect-all=customtkinter --collect-all=aiortc client.py
 
-      - name: upload binary
+      - name: upload binary to release
+        uses: softprops/action-gh-release@v2
+        if: github.event_name == 'release'
+        with:
+          files: dist/chat
+
+      - name: upload binary as artifact
         uses: actions/upload-artifact@v4
         with:
           name: chat-linux
