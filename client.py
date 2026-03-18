@@ -1,7 +1,7 @@
 """
-chat client - E2E encrypted, 2 user max
+chat client - E2E encrypted, 2 user max, WebRTC voice chat
 Linux + Windows + macOS
-dependencies: pip install customtkinter websockets cryptography requests
+dependencies: pip install customtkinter websockets cryptography requests aiortc
 run: python client.py
 """
 
@@ -15,7 +15,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-import webbrowser
 import requests
 import websockets
 
@@ -26,6 +25,8 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from aiortc import RTCPeerConnection, RTCSessionDescription, RTCIceCandidate
+from aiortc.contrib.media import MediaPlayer, MediaBlackhole
 
 
 # ── config ────────────────────────────────────────────────────────────────────
@@ -63,6 +64,19 @@ def decrypt(key: bytes, ciphertext_b64: str, nonce_b64: str) -> str:
         return "⚠ could not decrypt message"
 
 
+# ── mic helper ────────────────────────────────────────────────────────────────
+
+def get_mic():
+    system = platform.system()
+    if system == "Linux":
+        return MediaPlayer("default", format="pulse")
+    elif system == "Windows":
+        return MediaPlayer("audio=default", format="dshow")
+    elif system == "Darwin":
+        return MediaPlayer("default:none", format="avfoundation")
+    return None
+
+
 # ── app ───────────────────────────────────────────────────────────────────────
 
 class ChatApp(ctk.CTk):
@@ -81,13 +95,15 @@ class ChatApp(ctk.CTk):
         self.session_key = None
         self._download_url = None
 
+        # webrtc
+        self.pc = None
+        self.in_call = False
+
         # crypto
         self.private_key = X25519PrivateKey.generate()
         self.public_key_bytes = self.private_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
 
         self._build_login()
-
-        # check for updates silently in background
         threading.Thread(target=self._check_update, daemon=True).start()
 
     # ── update ────────────────────────────────────────────────────────────────
@@ -114,7 +130,6 @@ class ChatApp(ctk.CTk):
             pass
 
     def _enable_update_button(self, latest: str):
-        """Called when a new version is found — lights up the update button."""
         self.update_btn.configure(
             text=f"⬆  update v{latest}",
             state="normal",
@@ -123,25 +138,20 @@ class ChatApp(ctk.CTk):
         )
 
     def _do_update(self):
-        """Download new binary and restart — called when user clicks update button."""
         if not self._download_url:
             return
         try:
             self.after(0, lambda: self.update_btn.configure(text="downloading...", state="disabled"))
             r = requests.get(self._download_url, stream=True, timeout=60)
             r.raise_for_status()
-
             suffix = ".exe" if platform.system() == "Windows" else ""
             tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
             for chunk in r.iter_content(chunk_size=8192):
                 tmp.write(chunk)
             tmp.close()
-
             if platform.system() != "Windows":
                 os.chmod(tmp.name, os.stat(tmp.name).st_mode | stat.S_IEXEC)
-
             current_exe = sys.executable if getattr(sys, "frozen", False) else sys.argv[0]
-
             if platform.system() == "Windows":
                 bat = tempfile.NamedTemporaryFile(delete=False, suffix=".bat", mode="w")
                 bat.write(f'@echo off\ntimeout /t 2 /nobreak >nul\nmove /y "{tmp.name}" "{current_exe}"\nstart "" "{current_exe}"\ndel "%~f0"\n')
@@ -150,10 +160,8 @@ class ChatApp(ctk.CTk):
             else:
                 os.replace(tmp.name, current_exe)
                 subprocess.Popen([current_exe] + sys.argv[1:])
-
             self.after(0, self.destroy)
-
-        except Exception as e:
+        except Exception:
             self.after(0, lambda: self.update_btn.configure(text="update failed", state="disabled", fg_color="red"))
 
     # ── login screen ──────────────────────────────────────────────────────────
@@ -162,53 +170,33 @@ class ChatApp(ctk.CTk):
         self.login_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.login_frame.place(relx=0.5, rely=0.5, anchor="center")
 
-        ctk.CTkLabel(
-            self.login_frame, text="chat",
-            font=ctk.CTkFont(size=28, weight="bold")
-        ).pack(pady=(0, 24))
+        ctk.CTkLabel(self.login_frame, text="chat", font=ctk.CTkFont(size=28, weight="bold")).pack(pady=(0, 24))
 
-        # server IP
         ctk.CTkLabel(self.login_frame, text="server IP", anchor="w", width=320).pack(fill="x")
         self.server_entry = ctk.CTkEntry(self.login_frame, width=320, placeholder_text="192.168.1.42:8765")
         self.server_entry.insert(0, DEFAULT_SERVER)
         self.server_entry.pack(pady=(2, 12))
 
-        # username
         ctk.CTkLabel(self.login_frame, text="username", anchor="w", width=320).pack(fill="x")
         self.name_entry = ctk.CTkEntry(self.login_frame, width=320, placeholder_text="your name")
         self.name_entry.pack(pady=(2, 12))
 
-        # shared key
-        ctk.CTkLabel(
-            self.login_frame,
-            text="shared key  (both users must enter the same)",
-            anchor="w", width=320, text_color="gray"
-        ).pack(fill="x")
+        ctk.CTkLabel(self.login_frame, text="shared key  (both users must enter the same)", anchor="w", width=320, text_color="gray").pack(fill="x")
         self.key_entry = ctk.CTkEntry(self.login_frame, width=320, placeholder_text="optional extra key", show="•")
         self.key_entry.pack(pady=(2, 20))
         self.key_entry.bind("<Return>", lambda e: self._on_join())
 
-        # connect button
-        ctk.CTkButton(
-            self.login_frame, text="connect",
-            width=320, height=38,
-            command=self._on_join
-        ).pack()
+        ctk.CTkButton(self.login_frame, text="connect", width=320, height=38, command=self._on_join).pack()
 
-        # update button — disabled/gray until update found
         self.update_btn = ctk.CTkButton(
-            self.login_frame,
-            text="up to date",
+            self.login_frame, text="up to date",
             width=320, height=32,
-            fg_color="gray25",
-            hover_color="gray25",
-            text_color="gray50",
-            state="disabled",
+            fg_color="gray25", hover_color="gray25",
+            text_color="gray50", state="disabled",
             command=lambda: threading.Thread(target=self._do_update, daemon=True).start()
         )
         self.update_btn.pack(pady=(8, 0))
 
-        # error label
         self.login_error = ctk.CTkLabel(self.login_frame, text="", text_color="#ff6b6b")
         self.login_error.pack(pady=(8, 0))
 
@@ -221,11 +209,7 @@ class ChatApp(ctk.CTk):
         header.pack(fill="x", side="top")
         header.pack_propagate(False)
 
-        self.status_label = ctk.CTkLabel(
-            header,
-            text="chat  •  waiting for other user...",
-            font=ctk.CTkFont(size=13)
-        )
+        self.status_label = ctk.CTkLabel(header, text="chat  •  waiting for other user...", font=ctk.CTkFont(size=13))
         self.status_label.pack(side="left", padx=14)
 
         self.msg_frame = ctk.CTkScrollableFrame(self, corner_radius=0)
@@ -235,19 +219,19 @@ class ChatApp(ctk.CTk):
         input_bar.pack(fill="x", side="bottom")
         input_bar.pack_propagate(False)
 
-        self.msg_entry = ctk.CTkEntry(
-            input_bar,
-            placeholder_text="type a message...",
-            state="disabled"
+        self.call_btn = ctk.CTkButton(
+            input_bar, text="📞",
+            width=44, height=32,
+            fg_color="#4a9e3f", hover_color="#3d8a34",
+            command=self._on_call
         )
-        self.msg_entry.pack(side="left", fill="x", expand=True, padx=(10, 6), pady=10)
+        self.call_btn.pack(side="left", padx=(10, 4), pady=10)
+
+        self.msg_entry = ctk.CTkEntry(input_bar, placeholder_text="type a message...", state="disabled")
+        self.msg_entry.pack(side="left", fill="x", expand=True, padx=(4, 6), pady=10)
         self.msg_entry.bind("<Return>", lambda e: self._on_send())
 
-        ctk.CTkButton(
-            input_bar, text="send",
-            width=70, height=32,
-            command=self._on_send
-        ).pack(side="right", padx=(0, 10), pady=10)
+        ctk.CTkButton(input_bar, text="send", width=70, height=32, command=self._on_send).pack(side="right", padx=(0, 10), pady=10)
 
     # ── messages ──────────────────────────────────────────────────────────────
 
@@ -296,6 +280,98 @@ class ChatApp(ctk.CTk):
         self.msg_entry.delete(0, "end")
         asyncio.run_coroutine_threadsafe(self._send(text), self.loop)
 
+    def _on_call(self):
+        if self.in_call:
+            asyncio.run_coroutine_threadsafe(self._end_call(), self.loop)
+        else:
+            asyncio.run_coroutine_threadsafe(self._start_call(), self.loop)
+
+    # ── webrtc ────────────────────────────────────────────────────────────────
+
+    async def _start_call(self):
+        self.pc = RTCPeerConnection()
+        mic = get_mic()
+        if mic:
+            self.pc.addTrack(mic.audio)
+
+        @self.pc.on("icecandidate")
+        async def on_ice(candidate):
+            if candidate:
+                await self.websocket.send(json.dumps({
+                    "type": "webrtc_ice",
+                    "candidate": candidate.to_sdp(),
+                    "sdpMid": candidate.sdpMid,
+                    "sdpMLineIndex": candidate.sdpMLineIndex
+                }))
+
+        offer = await self.pc.createOffer()
+        await self.pc.setLocalDescription(offer)
+        await self.websocket.send(json.dumps({
+            "type": "webrtc_offer",
+            "sdp": offer.sdp,
+            "sdpType": offer.type
+        }))
+
+        self.in_call = True
+        self.after(0, lambda: self.call_btn.configure(text="📵", fg_color="#e74c3c", hover_color="#c0392b"))
+        self.after(0, self._add_message, "", "📞 calling...", True, False)
+
+    async def _handle_offer(self, msg: dict):
+        self.pc = RTCPeerConnection()
+        mic = get_mic()
+        if mic:
+            self.pc.addTrack(mic.audio)
+
+        @self.pc.on("icecandidate")
+        async def on_ice(candidate):
+            if candidate:
+                await self.websocket.send(json.dumps({
+                    "type": "webrtc_ice",
+                    "candidate": candidate.to_sdp(),
+                    "sdpMid": candidate.sdpMid,
+                    "sdpMLineIndex": candidate.sdpMLineIndex
+                }))
+
+        @self.pc.on("track")
+        async def on_track(track):
+            recorder = MediaBlackhole()
+            recorder.addTrack(track)
+            await recorder.start()
+
+        await self.pc.setRemoteDescription(RTCSessionDescription(sdp=msg["sdp"], type=msg["sdpType"]))
+        answer = await self.pc.createAnswer()
+        await self.pc.setLocalDescription(answer)
+        await self.websocket.send(json.dumps({
+            "type": "webrtc_answer",
+            "sdp": answer.sdp,
+            "sdpType": answer.type
+        }))
+
+        self.in_call = True
+        self.after(0, lambda: self.call_btn.configure(text="📵", fg_color="#e74c3c", hover_color="#c0392b"))
+        self.after(0, self._add_message, "", "📞 call connected", True, False)
+
+    async def _handle_answer(self, msg: dict):
+        await self.pc.setRemoteDescription(RTCSessionDescription(sdp=msg["sdp"], type=msg["sdpType"]))
+        self.after(0, self._add_message, "", "📞 call connected", True, False)
+
+    async def _handle_ice(self, msg: dict):
+        if self.pc:
+            candidate = RTCIceCandidate(
+                sdpMid=msg["sdpMid"],
+                sdpMLineIndex=msg["sdpMLineIndex"],
+                candidate=msg["candidate"]
+            )
+            await self.pc.addIceCandidate(candidate)
+
+    async def _end_call(self):
+        if self.pc:
+            await self.pc.close()
+            self.pc = None
+        self.in_call = False
+        self.after(0, lambda: self.call_btn.configure(text="📞", fg_color="#4a9e3f", hover_color="#3d8a34"))
+        self.after(0, self._add_message, "", "📵 call ended", True, False)
+
     # ── key exchange ──────────────────────────────────────────────────────────
 
     def _handle_key_exchange(self, msg: dict):
@@ -330,16 +406,25 @@ class ChatApp(ctk.CTk):
                 }))
                 async for raw in ws:
                     msg = json.loads(raw)
-                    if msg["type"] == "error":
+                    t = msg.get("type", "")
+                    if t == "error":
                         self.after(0, self._add_message, "", f"✗ {msg['text']}", True, False)
-                    elif msg["type"] == "system":
+                    elif t == "system":
                         self.after(0, self._add_message, "", msg["text"], True, False)
-                    elif msg["type"] == "key_exchange":
+                    elif t == "key_exchange":
                         self._handle_key_exchange(msg)
-                    elif msg["type"] == "message":
+                    elif t == "message":
                         plaintext = decrypt(self.session_key, msg["ciphertext"], msg["nonce"]) if self.session_key else "⚠ received message before key exchange"
                         is_self = msg["username"] == self.username
                         self.after(0, self._add_message, msg["username"], plaintext, False, is_self)
+                    elif t == "webrtc_offer":
+                        asyncio.run_coroutine_threadsafe(self._handle_offer(msg), self.loop)
+                    elif t == "webrtc_answer":
+                        asyncio.run_coroutine_threadsafe(self._handle_answer(msg), self.loop)
+                    elif t == "webrtc_ice":
+                        asyncio.run_coroutine_threadsafe(self._handle_ice(msg), self.loop)
+                    elif t == "call_ended":
+                        asyncio.run_coroutine_threadsafe(self._end_call(), self.loop)
         except Exception as e:
             self.after(0, self._add_message, "", f"connection error: {e}", True, False)
 

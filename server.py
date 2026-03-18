@@ -68,14 +68,20 @@ async def handler(websocket):
         # main message loop - server only forwards encrypted blobs, never reads content
         async for raw in websocket:
             msg = json.loads(raw)
-            # server forwards encrypted message as-is, cannot read it
-            packet = {
-                "type": "message",
-                "username": username,
-                "ciphertext": msg.get("ciphertext", ""),
-                "nonce": msg.get("nonce", "")
-            }
-            await broadcast(packet, sender=websocket)
+            msg_type = msg.get("type", "")  # ← das fehlt noch
+
+            if msg_type == "message":
+                packet = {
+                    "type": "message",
+                    "username": username,
+                    "ciphertext": msg.get("ciphertext", ""),
+                    "nonce": msg.get("nonce", "")
+                }
+                await broadcast(packet, sender=websocket)
+
+            elif msg_type in ("webrtc_offer", "webrtc_answer", "webrtc_ice"):
+                msg["username"] = username
+                await broadcast(msg, sender=websocket)
 
     except websockets.exceptions.ConnectionClosed:
         pass
@@ -85,6 +91,7 @@ async def handler(websocket):
         if username:
             print(f"[-] {username} disconnected  ({len(clients)}/2 online)")
             await broadcast({"type": "system", "text": f"{username} left — chat unlocked"})
+            await broadcast({"type": "call_ended"})  # ← hier, nach username check
 
 
 async def main():
