@@ -1,7 +1,7 @@
 """
 chat client - E2E encrypted, 2 user max
 Linux + Windows + macOS
-dependencies: pip install customtkinter websockets cryptography
+dependencies: pip install customtkinter websockets cryptography requests
 run: python client.py
 """
 
@@ -9,7 +9,14 @@ import asyncio
 import base64
 import json
 import os
+import platform
+import stat
+import subprocess
+import sys
+import tempfile
 import threading
+import webbrowser
+import requests
 import websockets
 
 import customtkinter as ctk
@@ -21,15 +28,17 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 
-# ── appearance ────────────────────────────────────────────────────────────────
+# ── config ────────────────────────────────────────────────────────────────────
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
+CURRENT_VERSION = "1.0.0"
+GITHUB_RELEASES = "https://api.github.com/repos/Streamskill/chat-app/releases/latest"
 DEFAULT_SERVER = "localhost:8765"
 
 
-# ── crypto helpers ────────────────────────────────────────────────────────────
+# ── crypto ────────────────────────────────────────────────────────────────────
 
 def derive_key(shared_secret: bytes, extra_key: str) -> bytes:
     salt = extra_key.encode() if extra_key else b"chatapp-default-salt"
@@ -54,27 +63,98 @@ def decrypt(key: bytes, ciphertext_b64: str, nonce_b64: str) -> str:
         return "⚠ could not decrypt message"
 
 
-# ── main window ───────────────────────────────────────────────────────────────
+# ── app ───────────────────────────────────────────────────────────────────────
 
 class ChatApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("chat")
-        self.geometry("500x680")
+        self.geometry("500x700")
         self.resizable(True, True)
 
+        # state
         self.websocket = None
         self.username = None
         self.extra_key = ""
         self.server_uri = ""
         self.loop = None
         self.session_key = None
+        self._download_url = None
 
-        # generate ECDH key pair once on startup
+        # crypto
         self.private_key = X25519PrivateKey.generate()
         self.public_key_bytes = self.private_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
 
         self._build_login()
+
+        # check for updates silently in background
+        threading.Thread(target=self._check_update, daemon=True).start()
+
+    # ── update ────────────────────────────────────────────────────────────────
+
+    def _check_update(self):
+        try:
+            r = requests.get(GITHUB_RELEASES, timeout=5)
+            data = r.json()
+            latest = data.get("tag_name", "").lstrip("v")
+            if not latest or latest == CURRENT_VERSION:
+                return
+            is_windows = platform.system() == "Windows"
+            for asset in data.get("assets", []):
+                name = asset["name"].lower()
+                if is_windows and name.endswith(".exe"):
+                    self._download_url = asset["browser_download_url"]
+                    break
+                elif not is_windows and "linux" in name:
+                    self._download_url = asset["browser_download_url"]
+                    break
+            if self._download_url:
+                self.after(0, self._enable_update_button, latest)
+        except Exception:
+            pass
+
+    def _enable_update_button(self, latest: str):
+        """Called when a new version is found — lights up the update button."""
+        self.update_btn.configure(
+            text=f"⬆  update v{latest}",
+            state="normal",
+            fg_color="#4a9e3f",
+            hover_color="#3d8a34"
+        )
+
+    def _do_update(self):
+        """Download new binary and restart — called when user clicks update button."""
+        if not self._download_url:
+            return
+        try:
+            self.after(0, lambda: self.update_btn.configure(text="downloading...", state="disabled"))
+            r = requests.get(self._download_url, stream=True, timeout=60)
+            r.raise_for_status()
+
+            suffix = ".exe" if platform.system() == "Windows" else ""
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+            for chunk in r.iter_content(chunk_size=8192):
+                tmp.write(chunk)
+            tmp.close()
+
+            if platform.system() != "Windows":
+                os.chmod(tmp.name, os.stat(tmp.name).st_mode | stat.S_IEXEC)
+
+            current_exe = sys.executable if getattr(sys, "frozen", False) else sys.argv[0]
+
+            if platform.system() == "Windows":
+                bat = tempfile.NamedTemporaryFile(delete=False, suffix=".bat", mode="w")
+                bat.write(f'@echo off\ntimeout /t 2 /nobreak >nul\nmove /y "{tmp.name}" "{current_exe}"\nstart "" "{current_exe}"\ndel "%~f0"\n')
+                bat.close()
+                subprocess.Popen(["cmd", "/c", bat.name], creationflags=0x08000000)
+            else:
+                os.replace(tmp.name, current_exe)
+                subprocess.Popen([current_exe] + sys.argv[1:])
+
+            self.after(0, self.destroy)
+
+        except Exception as e:
+            self.after(0, lambda: self.update_btn.configure(text="update failed", state="disabled", fg_color="red"))
 
     # ── login screen ──────────────────────────────────────────────────────────
 
@@ -89,33 +169,22 @@ class ChatApp(ctk.CTk):
 
         # server IP
         ctk.CTkLabel(self.login_frame, text="server IP", anchor="w", width=320).pack(fill="x")
-        self.server_entry = ctk.CTkEntry(
-            self.login_frame, width=320,
-            placeholder_text="192.168.1.42:8765"
-        )
+        self.server_entry = ctk.CTkEntry(self.login_frame, width=320, placeholder_text="192.168.1.42:8765")
         self.server_entry.insert(0, DEFAULT_SERVER)
         self.server_entry.pack(pady=(2, 12))
 
         # username
         ctk.CTkLabel(self.login_frame, text="username", anchor="w", width=320).pack(fill="x")
-        self.name_entry = ctk.CTkEntry(
-            self.login_frame, width=320,
-            placeholder_text="your name"
-        )
+        self.name_entry = ctk.CTkEntry(self.login_frame, width=320, placeholder_text="your name")
         self.name_entry.pack(pady=(2, 12))
 
         # shared key
         ctk.CTkLabel(
             self.login_frame,
             text="shared key  (both users must enter the same)",
-            anchor="w", width=320,
-            text_color="gray"
+            anchor="w", width=320, text_color="gray"
         ).pack(fill="x")
-        self.key_entry = ctk.CTkEntry(
-            self.login_frame, width=320,
-            placeholder_text="optional extra key",
-            show="•"
-        )
+        self.key_entry = ctk.CTkEntry(self.login_frame, width=320, placeholder_text="optional extra key", show="•")
         self.key_entry.pack(pady=(2, 20))
         self.key_entry.bind("<Return>", lambda e: self._on_join())
 
@@ -126,11 +195,21 @@ class ChatApp(ctk.CTk):
             command=self._on_join
         ).pack()
 
-        # error label
-        self.login_error = ctk.CTkLabel(
-            self.login_frame, text="",
-            text_color="#ff6b6b"
+        # update button — disabled/gray until update found
+        self.update_btn = ctk.CTkButton(
+            self.login_frame,
+            text="up to date",
+            width=320, height=32,
+            fg_color="gray25",
+            hover_color="gray25",
+            text_color="gray50",
+            state="disabled",
+            command=lambda: threading.Thread(target=self._do_update, daemon=True).start()
         )
+        self.update_btn.pack(pady=(8, 0))
+
+        # error label
+        self.login_error = ctk.CTkLabel(self.login_frame, text="", text_color="#ff6b6b")
         self.login_error.pack(pady=(8, 0))
 
     # ── chat screen ───────────────────────────────────────────────────────────
@@ -138,7 +217,6 @@ class ChatApp(ctk.CTk):
     def _build_chat(self):
         self.login_frame.destroy()
 
-        # header
         header = ctk.CTkFrame(self, height=44, corner_radius=0)
         header.pack(fill="x", side="top")
         header.pack_propagate(False)
@@ -150,11 +228,9 @@ class ChatApp(ctk.CTk):
         )
         self.status_label.pack(side="left", padx=14)
 
-        # message area
         self.msg_frame = ctk.CTkScrollableFrame(self, corner_radius=0)
         self.msg_frame.pack(fill="both", expand=True)
 
-        # input area
         input_bar = ctk.CTkFrame(self, height=52, corner_radius=0)
         input_bar.pack(fill="x", side="bottom")
         input_bar.pack_propagate(False)
@@ -173,28 +249,21 @@ class ChatApp(ctk.CTk):
             command=self._on_send
         ).pack(side="right", padx=(0, 10), pady=10)
 
-    # ── message rendering ─────────────────────────────────────────────────────
+    # ── messages ──────────────────────────────────────────────────────────────
 
     def _add_message(self, username: str, text: str, is_system=False, is_self=False):
         row = ctk.CTkFrame(self.msg_frame, fg_color="transparent")
         row.pack(fill="x", pady=1)
 
         if is_system:
-            ctk.CTkLabel(
-                row, text=text,
-                text_color="gray",
-                font=ctk.CTkFont(size=11)
-            ).pack(anchor="center", pady=2)
+            ctk.CTkLabel(row, text=text, text_color="gray", font=ctk.CTkFont(size=11)).pack(anchor="center", pady=2)
         else:
             anchor = "e" if is_self else "w"
-            name_color = "#4da6ff" if is_self else "#aaaaaa"
-
             ctk.CTkLabel(
                 row, text=username,
                 font=ctk.CTkFont(size=11, weight="bold"),
-                text_color=name_color
+                text_color="#4da6ff" if is_self else "#aaaaaa"
             ).pack(anchor=anchor, padx=10)
-
             ctk.CTkLabel(
                 row, text=text,
                 wraplength=340,
@@ -202,7 +271,6 @@ class ChatApp(ctk.CTk):
                 font=ctk.CTkFont(size=13)
             ).pack(anchor=anchor, padx=10)
 
-        # scroll to bottom
         self.after(50, lambda: self.msg_frame._parent_canvas.yview_moveto(1.0))
 
     # ── events ────────────────────────────────────────────────────────────────
@@ -232,14 +300,12 @@ class ChatApp(ctk.CTk):
 
     def _handle_key_exchange(self, msg: dict):
         try:
-            their_public_bytes = base64.b64decode(msg["public_key"])
-            their_public_key = X25519PublicKey.from_public_bytes(their_public_bytes)
+            their_public_key = X25519PublicKey.from_public_bytes(base64.b64decode(msg["public_key"]))
             shared_secret = self.private_key.exchange(their_public_key)
             self.session_key = derive_key(shared_secret, self.extra_key)
-
+            name = msg["username"]
             self.after(0, lambda: self.msg_entry.configure(state="normal"))
             self.after(0, lambda: self.msg_entry.focus())
-            name = msg['username']
             self.after(0, lambda: self.status_label.configure(text=f"chat  •  🔒 encrypted with {name}"))
             self.after(0, self._add_message, "", "🔒 end-to-end encrypted — server sees nothing", True, False)
         except Exception as e:
@@ -264,34 +330,23 @@ class ChatApp(ctk.CTk):
                 }))
                 async for raw in ws:
                     msg = json.loads(raw)
-
                     if msg["type"] == "error":
                         self.after(0, self._add_message, "", f"✗ {msg['text']}", True, False)
-
                     elif msg["type"] == "system":
                         self.after(0, self._add_message, "", msg["text"], True, False)
-
                     elif msg["type"] == "key_exchange":
                         self._handle_key_exchange(msg)
-
                     elif msg["type"] == "message":
-                        if self.session_key:
-                            plaintext = decrypt(self.session_key, msg["ciphertext"], msg["nonce"])
-                        else:
-                            plaintext = "⚠ received message before key exchange"
+                        plaintext = decrypt(self.session_key, msg["ciphertext"], msg["nonce"]) if self.session_key else "⚠ received message before key exchange"
                         is_self = msg["username"] == self.username
                         self.after(0, self._add_message, msg["username"], plaintext, False, is_self)
-
         except Exception as e:
             self.after(0, self._add_message, "", f"connection error: {e}", True, False)
 
     async def _send(self, text: str):
         if self.websocket and self.session_key:
             ciphertext, nonce = encrypt(self.session_key, text)
-            await self.websocket.send(json.dumps({
-                "ciphertext": ciphertext,
-                "nonce": nonce
-            }))
+            await self.websocket.send(json.dumps({"ciphertext": ciphertext, "nonce": nonce}))
             self.after(0, self._add_message, self.username, text, False, True)
 
 
