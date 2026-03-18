@@ -20,28 +20,35 @@ jobs:
       - name: setup python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: install dependencies
         run: pip install customtkinter websockets cryptography requests aiortc pyinstaller
 
-      - name: build exe
+      - name: build chat
         run: pyinstaller --onedir --windowed --name chat --hidden-import=requests --hidden-import=charset_normalizer --hidden-import=aiortc --collect-all=customtkinter --collect-all=aiortc client.py
 
-      - name: zip output
+      - name: zip chat
         run: Compress-Archive -Path dist/chat -DestinationPath dist/chat-windows.zip
+
+      - name: build installer
+        run: pip install pyinstaller && pyinstaller --onefile --windowed --name installer --hidden-import=requests installer.py
 
       - name: upload to release
         uses: softprops/action-gh-release@v2
         if: github.event_name == 'release'
         with:
-          files: dist/chat-windows.zip
+          files: |
+            dist/chat-windows.zip
+            dist/installer.exe
 
       - name: upload as artifact
         uses: actions/upload-artifact@v4
         with:
           name: chat-windows
-          path: dist/chat-windows.zip
+          path: |
+            dist/chat-windows.zip
+            dist/installer.exe
 
   build-linux:
     runs-on: ubuntu-latest
@@ -51,21 +58,21 @@ jobs:
       - name: setup python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: install dependencies
         run: pip install customtkinter websockets cryptography requests aiortc pyinstaller
 
-      - name: build binary
+      - name: build
         run: pyinstaller --onefile --name chat --hidden-import=requests --hidden-import=charset_normalizer --hidden-import=aiortc --collect-all=customtkinter --collect-all=aiortc client.py
 
-      - name: upload binary to release
+      - name: upload to release
         uses: softprops/action-gh-release@v2
         if: github.event_name == 'release'
         with:
           files: dist/chat
 
-      - name: upload binary as artifact
+      - name: upload as artifact
         uses: actions/upload-artifact@v4
         with:
           name: chat-linux
