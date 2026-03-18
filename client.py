@@ -34,7 +34,7 @@ from aiortc.contrib.media import MediaPlayer, MediaBlackhole
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
-CURRENT_VERSION = "1.0.0"
+CURRENT_VERSION = "1.1.1"
 GITHUB_RELEASES = "https://api.github.com/repos/Streamskill/chat-app/releases/latest"
 DEFAULT_SERVER = "localhost:8765"
 
