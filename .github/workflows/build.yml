@@ -3,7 +3,7 @@ name: build
 on:
   push:
     branches: [ main ]
-  workflow_dispatch:  # manually trigger from GitHub website too
+  workflow_dispatch:
 
 jobs:
 
@@ -18,10 +18,10 @@ jobs:
           python-version: "3.12"
 
       - name: install dependencies
-        run: pip install customtkinter websockets cryptography pyinstaller
+        run: pip install customtkinter websockets cryptography requests pyinstaller
 
       - name: build exe
-        run: pyinstaller --onefile --windowed --name chat client.py
+        run: pyinstaller --onefile --windowed --name chat --hidden-import=requests --hidden-import=charset_normalizer --collect-all=customtkinter client.py
 
       - name: upload exe
         uses: actions/upload-artifact@v4
@@ -40,10 +40,10 @@ jobs:
           python-version: "3.12"
 
       - name: install dependencies
-        run: pip install customtkinter websockets cryptography pyinstaller
+        run: pip install customtkinter websockets cryptography requests pyinstaller
 
       - name: build binary
-        run: pyinstaller --onefile --name chat client.py
+        run: pyinstaller --onefile --name chat --hidden-import=requests --hidden-import=charset_normalizer --collect-all=customtkinter client.py
 
       - name: upload binary
         uses: actions/upload-artifact@v4
